@@ -1,0 +1,92 @@
+<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LectureBox - 내 강의 노트</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font:14px system-ui,sans-serif;display:flex;height:100vh;color:#222}
+#side{width:230px;background:#1f2937;color:#e5e7eb;padding:12px;overflow:auto}
+#side h2{margin:0 0 8px;font-size:17px}.c{margin-top:8px;font-weight:700}.w{padding:4px 10px;cursor:pointer;border-radius:4px}.w:hover,.w.on{background:#374151}
+button{cursor:pointer;border:0;background:#4f46e5;color:#fff;padding:6px 10px;border-radius:6px;margin:2px}button.g{background:#e5e7eb;color:#222}
+#main{flex:1;display:flex;flex-direction:column;min-width:0}#bar{padding:10px;border-bottom:1px solid #ddd}
+#cols{flex:1;display:flex;min-height:0}#cols>div{flex:1;overflow:auto;padding:10px;border-right:1px solid #eee}
+.seg{padding:6px;border-radius:6px;cursor:pointer;margin:2px 0}.seg:hover,.seg.on{background:#eef2ff}.t{color:#4f46e5;font-weight:700;margin-right:6px}
+canvas{width:100%;border:1px solid #ddd;margin-bottom:8px}.pg{scroll-margin:8px}
+.q{background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:8px;margin:6px 0}.q input{padding:4px;width:130px}
+#chat{position:fixed;right:14px;bottom:14px;width:340px;background:#fff;border:1px solid #ccc;border-radius:10px;box-shadow:0 4px 16px #0003;display:none;flex-direction:column;max-height:70vh}
+#log{overflow:auto;padding:8px;flex:1}.src{font-size:12px;color:#4f46e5;cursor:pointer;display:block}
+small{color:#777}
+</style></head><body>
+<div id="side"><h2>📚 LectureBox</h2><button onclick="addCourse()">+ 과목</button><div id="tree"></div>
+<hr><small>💰 비용 0원 구조<br>STT: Whisper (브라우저 내 실행)<br>요약/문제: 내장 알고리즘, 또는 내 PC의 Ollama(Llama 3)</small></div>
+<div id="main"><div id="bar"><b id="title">과목과 주차를 선택하세요</b><span id="ctl" style="display:none">
+<label class="g" style="margin-left:10px">🎙 녹음 <input type="file" id="fa" accept="audio/*" hidden></label>
+<label style="margin-left:6px">📄 PDF <input type="file" id="fp" accept=".pdf" hidden></label>
+<button onclick="stt()">텍스트 변환</button><button onclick="summ()">요약</button><button onclick="mkq()">문제 생성</button><button class="g" onclick="tc()">🤖 강의 챗봇</button>
+<br><audio id="au" controls style="width:100%;margin-top:6px"></audio><small id="st"></small></span></div>
+<div id="cols"><div><h3>📝 전사 / 요약 / 문제</h3><div id="sum"></div><div id="qs"></div><div id="tr"></div></div><div><h3>📄 PDF</h3><div id="pdf"></div></div></div></div>
+<div id="chat"><div style="padding:8px;background:#4f46e5;color:#fff;border-radius:10px 10px 0 0">과목 챗봇 <span style="float:right;cursor:pointer" onclick="tc()">✕</span></div><div id="log"></div>
+<div style="display:flex"><input id="qi" style="flex:1;padding:8px" placeholder="이번 학기 강조한 내용은?" onkeydown="if(event.key=='Enter')ask()"><button onclick="ask()">전송</button></div></div>
+<script type="module">
+import * as pdfjs from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs';
+pdfjs.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs';
+const $=id=>document.getElementById(id);
+let D=JSON.parse(localStorage.lb||'{"courses":{}}'),cur=null,pages=[];
+const save=()=>localStorage.lb=JSON.stringify(D);
+// ---- 파일 저장(IndexedDB)
+const db=new Promise(r=>{const q=indexedDB.open('lb',1);q.onupgradeneeded=()=>q.result.createObjectStore('f');q.onsuccess=()=>r(q.result)});
+const put=async(k,v)=>{const d=await db;d.transaction('f','readwrite').objectStore('f').put(v,k)};
+const get=async k=>{const d=await db;return new Promise(r=>{const q=d.transaction('f').objectStore('f').get(k);q.onsuccess=()=>r(q.result)})};
+// ---- 폴더 트리
+window.addCourse=()=>{const n=prompt('과목명 (예: 화폐금융론)');if(n){D.courses[n]={};save();tree()}};
+window.addWeek=c=>{const n=prompt('주차 (예: 1주차)');if(n){D.courses[c][n]={segs:[],sum:[],quiz:[],pages:[]};save();tree()}};
+function tree(){$('tree').innerHTML=Object.keys(D.courses).map(c=>`<div class="c">📁 ${c} <a style="cursor:pointer" onclick="addWeek('${c}')">＋</a></div>`+Object.keys(D.courses[c]).map(w=>`<div class="w ${cur&&cur[0]==c&&cur[1]==w?'on':''}" onclick="openW('${c}','${w}')">📂 ${w}</div>`).join('')).join('')}
+const W=()=>D.courses[cur[0]][cur[1]];
+window.openW=async(c,w)=>{cur=[c,w];tree();$('title').textContent=`${c} · ${w}`;$('ctl').style.display='';
+ const a=await get(c+w+'a');$('au').src=a?URL.createObjectURL(a):'';
+ const p=await get(c+w+'p');$('pdf').innerHTML='';pages=[];if(p)await showPdf(p);render()};
+$('fa').onchange=async e=>{const f=e.target.files[0];await put(cur[0]+cur[1]+'a',f);$('au').src=URL.createObjectURL(f);$('st').textContent='녹음 저장됨'};
+$('fp').onchange=async e=>{const f=e.target.files[0];await put(cur[0]+cur[1]+'p',f);$('pdf').innerHTML='';await showPdf(f);render()};
+async function showPdf(f){const d=await pdfjs.getDocument({data:await f.arrayBuffer()}).promise;const tx=[];
+ for(let i=1;i<=d.numPages;i++){const p=await d.getPage(i),v=p.getViewport({scale:1.2}),c=document.createElement('canvas');c.id='pg'+i;c.className='pg';c.width=v.width;c.height=v.height;$('pdf').append(c);
+  await p.render({canvasContext:c.getContext('2d'),viewport:v}).promise;tx.push((await p.getTextContent()).items.map(x=>x.str).join(' '))}
+ W().pages=tx;save()}
+// ---- STT (Whisper, 로컬)
+window.stt=async()=>{const a=await get(cur[0]+cur[1]+'a');if(!a)return alert('녹음 파일을 먼저 올리세요');
+ $('st').textContent='Whisper 모델 로딩 중... (최초 1회 다운로드, 이후 캐시)';
+ const {pipeline}=await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3');
+ const asr=await pipeline('automatic-speech-recognition','Xenova/whisper-base',{progress_callback:x=>{if(x.progress)$('st').textContent='모델 '+Math.round(x.progress)+'%'}});
+ $('st').textContent='변환 중... 수업 길이에 따라 몇 분 걸립니다';
+ const r=await asr(URL.createObjectURL(a),{chunk_length_s:30,stride_length_s:5,return_timestamps:true,language:'korean',task:'transcribe'});
+ W().segs=r.chunks.map(c=>({s:c.timestamp[0]||0,t:c.text.trim(),p:0}));mapPages();save();$('st').textContent='완료!';render()};
+// ---- 텍스트 유틸 (한글 bigram 검색)
+const grams=s=>{const o=[];for(const w of s.toLowerCase().split(/[^\p{L}\p{N}]+/u)){if(w.length==1)o.push(w);for(let i=0;i<w.length-1;i++)o.push(w.slice(i,i+2))}return o};
+const score=(q,t)=>{const T=new Set(grams(t));const Q=grams(q);return Q.length?Q.filter(x=>T.has(x)).length/Math.sqrt(Q.length):0};
+function mapPages(){const w=W();w.segs.forEach(s=>{let b=0,bi=0;w.pages.forEach((p,i)=>{const c=score(s.t,p);if(c>b){b=c;bi=i+1}});s.p=b>1?bi:0})}
+const fmt=s=>new Date(s*1000).toISOString().substr(11,8);
+// ---- 양방향 싱크
+window.jump=(i)=>{const s=W().segs[i];if(!s)return;$('au').currentTime=s.s;$('au').play();if(s.p)$('pg'+s.p)?.scrollIntoView({behavior:'smooth'})};
+window.goPage=p=>{const i=W().segs.findIndex(s=>s.p==p);if(i>=0)jump(i)};
+$('pdf').onclick=e=>{if(e.target.id?.startsWith('pg'))goPage(+e.target.id.slice(2))};
+$('au').ontimeupdate=()=>{const t=$('au').currentTime,S=W()?.segs||[];let k=-1;S.forEach((s,i)=>{if(s.s<=t)k=i});document.querySelectorAll('.seg[data-i]').forEach(e=>e.classList.toggle('on',+e.dataset.i==k))};
+function render(){const w=W();
+ $('sum').innerHTML=w.sum.length?'<h4>요약 (클릭 → 해당 구간 재생 + PDF 이동)</h4>'+w.sum.map(i=>`<div class="seg" onclick="jump(${i})"><span class="t">${fmt(w.segs[i].s)}</span>${w.segs[i].t}${w.segs[i].p?` <small>p.${w.segs[i].p}</small>`:''}</div>`).join(''):'';
+ $('qs').innerHTML=w.quiz.length?'<h4>연습 문제</h4>'+w.quiz.map((q,n)=>`<div class="q"><div>Q${n+1}. ${q.q}</div><input id="a${n}" placeholder="정답"> <button onclick="chk(${n})">확인</button> <button class="g" onclick="jump(${q.i})">📍 근거 구간</button> <span id="r${n}"></span></div>`).join(''):'';
+ $('tr').innerHTML='<h4>전체 전사 (클릭 → 이동)</h4>'+w.segs.map((s,i)=>`<div class="seg" data-i="${i}" onclick="jump(${i})"><span class="t">${fmt(s.s)}</span>${s.t}</div>`).join('')}
+// ---- LLM(선택): 내 PC의 Ollama + Llama 3 → 서버비 0원
+async function llm(p){try{const r=await fetch('http://localhost:11434/api/generate',{method:'POST',body:JSON.stringify({model:'llama3',prompt:p,stream:false})});return (await r.json()).response}catch{return null}}
+const sents=t=>t.split(/(?<=[.?!다요])\s+/).filter(x=>x.length>8);
+function top(w,n){const all=w.segs.map(s=>s.t).join(' ');const tf={};grams(all).forEach(g=>tf[g]=(tf[g]||0)+1);
+ return w.segs.map((s,i)=>({i,v:grams(s.t).reduce((a,g)=>a+(tf[g]||0),0)/(grams(s.t).length||1)*Math.log(s.t.length+1)})).sort((a,b)=>b.v-a.v).slice(0,n).map(x=>x.i).sort((a,b)=>a-b)}
+window.summ=async()=>{const w=W();if(!w.segs.length)return alert('먼저 텍스트 변환');w.sum=top(w,Math.min(6,w.segs.length));save();render();
+ const o=await llm('다음 강의 전사를 한국어 불릿 5줄로 요약:\n'+w.segs.map(s=>s.t).join(' ').slice(0,6000));if(o){$('sum').insertAdjacentHTML('afterbegin','<div class="q"><b>🦙 Llama 3 요약</b><br>'+o.replace(/\n/g,'<br>')+'</div>')}};
+window.mkq=()=>{const w=W();if(!w.segs.length)return alert('먼저 텍스트 변환');
+ w.quiz=top(w,8).map(i=>{const t=w.segs[i].t,ws=t.split(/\s+/).filter(x=>x.length>=3).sort((a,b)=>b.length-a.length);const a=ws[0];return a?{i,a,q:t.replace(a,'_____')}:null}).filter(Boolean).slice(0,5);save();render()};
+window.chk=n=>{const q=W().quiz[n],v=$('a'+n).value.trim();$('r'+n).textContent=v&&(q.a.includes(v)||v.includes(q.a))?'✅ 정답':'❌ 정답: '+q.a};
+// ---- 과목 RAG 챗봇 (모든 주차 검색 + 출처)
+window.tc=()=>{const c=$('chat');c.style.display=c.style.display=='flex'?'none':'flex'};
+window.ask=async()=>{const q=$('qi').value;if(!q)return;$('qi').value='';const L=$('log');L.innerHTML+=`<p><b>나:</b> ${q}</p>`;
+ const ch=[];for(const [wk,w] of Object.entries(D.courses[cur[0]]))for(const [i,s] of w.segs.entries())ch.push({wk,i,txt:s.t,src:`${wk} 녹음 ${fmt(s.s)}${s.p?' / PDF p.'+s.p:''}`,sc:score(q,s.t)});
+ for(const [wk,w] of Object.entries(D.courses[cur[0]]))w.pages.forEach((p,i)=>ch.push({wk,i:-1,txt:p.slice(0,400),src:`${wk} PDF p.${i+1}`,sc:score(q,p)}));
+ const hit=ch.sort((a,b)=>b.sc-a.sc).slice(0,4).filter(x=>x.sc>0);if(!hit.length){L.innerHTML+='<p>관련 내용을 못 찾았어요.</p>';return}
+ const ans=await llm('아래 강의 발췌만 근거로 질문에 한국어로 답하세요.\n'+hit.map((h,k)=>`[${k+1}] ${h.txt}`).join('\n')+'\n질문: '+q);
+ L.innerHTML+=`<p><b>봇:</b> ${ans?ans.replace(/\n/g,'<br>'):'(Ollama 미연결 → 관련 발췌를 보여드려요)<br>'+hit.map(h=>'• '+h.txt.slice(0,120)).join('<br>')}</p>`+hit.map(h=>`<span class="src" onclick="${h.i>=0?`openW('${cur[0]}','${h.wk}').then(()=>jump(${h.i}))`:''}">📎 ${h.src}</span>`).join('');L.scrollTop=1e9};
+tree();
+</script></body></html>
